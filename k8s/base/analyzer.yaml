@@ -1,0 +1,137 @@
+# analyzer-python — ConfigMap, Secret, Deployment, Service.
+# Khớp compose: HTTP :8000 /healthz + /readyz + /stats, đọc Redis list
+# events:queue (BRPOPLPUSH sang events:processing), ghi bảng alerts
+# vào PostgreSQL. Ngưỡng phát hiện đọc từ env khi khởi động.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: analyzer-python
+  namespace: container-platform
+  labels:
+    app: analyzer-python
+    app.kubernetes.io/part-of: container-platform
+data:
+  ANALYZER_PORT: "8000"
+  REDIS_ADDR: "redis:6379"
+  REDIS_DB: "0"
+  REDIS_QUEUE: "events:queue"
+  REDIS_PROCESSING_QUEUE: "events:processing"
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "secuser"
+  POSTGRES_DB: "sec_events"
+  BRUTE_FORCE_THRESHOLD: "5"
+  BRUTE_FORCE_WINDOW_SECONDS: "300"
+  PORT_SCAN_THRESHOLD: "5"
+  PORT_SCAN_WINDOW_SECONDS: "60"
+  ALERT_COOLDOWN_SECONDS: "3600"
+---
+# Secret CHỈ chứa placeholder "change-me". Thay bằng secret thật TRƯỚC
+# khi dùng thật (kubectl create secret / sealed-secrets /
+# external-secrets) và phải khớp với Secret của postgres (POSTGRES_PASSWORD)
+# thì analyzer mới kết nối được DB. Tuyệt đối không commit secret thật.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: analyzer-python
+  namespace: container-platform
+  labels:
+    app: analyzer-python
+    app.kubernetes.io/part-of: container-platform
+type: Opaque
+stringData:
+  REDIS_PASSWORD: ""
+  POSTGRES_PASSWORD: "change-me"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analyzer-python
+  namespace: container-platform
+  labels:
+    app: analyzer-python
+    app.kubernetes.io/part-of: container-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analyzer-python
+  template:
+    metadata:
+      labels:
+        app: analyzer-python
+        app.kubernetes.io/part-of: container-platform
+    spec:
+      serviceAccountName: analyzer-python
+      automountServiceAccountToken: false
+      securityContext:
+        # Dockerfile tạo user `analyzer` bằng `useradd -r` KHÔNG ghim
+        # uid bằng -u nên uid không cố định trong Dockerfile; vì vậy ở
+        # đây chỉ ép runAsNonRoot (image đã USER analyzer) mà không đặt
+        # runAsUser, tránh ghim sai uid. Kiểm tra uid thật bằng
+        # `kubectl exec deploy/analyzer-python -- id analyzer` nếu cần.
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: analyzer-python
+          image: container-platform/analyzer-python:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: analyzer-python
+            - secretRef:
+                name: analyzer-python
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Image đặt PYTHONDONTWRITEBYTECODE=1, app chỉ ghi log ra
+            # stdout, không ghi file nào nên không cần emptyDir.
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 18
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analyzer-python
+  namespace: container-platform
+  labels:
+    app: analyzer-python
+    app.kubernetes.io/part-of: container-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: analyzer-python
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

@@ -1,0 +1,137 @@
+# api-node — ConfigMap, Secret, Deployment, Service.
+# Khớp compose + services/api-node/README.md: HTTP :3000, /healthz +
+# /readyz, /api/alerts, /api/stats, /api/auth/login, WS /ws?token=<jwt>.
+# JWT_SECRET bắt buộc (không đặt thì server từ chối khởi động).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-node
+  namespace: container-platform
+  labels:
+    app: api-node
+    app.kubernetes.io/part-of: container-platform
+data:
+  API_PORT: "3000"
+  REDIS_ADDR: "redis:6379"
+  REDIS_DB: "0"
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "secuser"
+  POSTGRES_DB: "sec_events"
+  JWT_EXPIRES_IN: "1h"
+  WS_POLL_INTERVAL_MS: "2000"
+---
+# Secret CHỈ chứa placeholder. Thay bằng secret thật TRƯỚC khi dùng thật
+# (kubectl create secret / sealed-secrets / external-secrets):
+# - POSTGRES_PASSWORD phải khớp Secret của postgres.
+# - JWT_SECRET bắt buộc phải đổi thành chuỗi ngẫu nhiên dài; giữ nguyên
+#   "change-me" thì token JWT coi như ai cũng ký được.
+# - API_ADMIN_USER / API_ADMIN_PASSWORD là tài khoản seed duy nhất của
+#   login; không đặt thì login tắt (503 login_disabled).
+# Tuyệt đối không commit secret thật.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-node
+  namespace: container-platform
+  labels:
+    app: api-node
+    app.kubernetes.io/part-of: container-platform
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: "change-me"
+  REDIS_PASSWORD: ""
+  JWT_SECRET: "change-me"
+  API_ADMIN_USER: "admin"
+  API_ADMIN_PASSWORD: "change-me"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-node
+  namespace: container-platform
+  labels:
+    app: api-node
+    app.kubernetes.io/part-of: container-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-node
+  template:
+    metadata:
+      labels:
+        app: api-node
+        app.kubernetes.io/part-of: container-platform
+    spec:
+      serviceAccountName: api-node
+      automountServiceAccountToken: false
+      securityContext:
+        # Như analyzer: Dockerfile tạo user `api` bằng `useradd -r`
+        # KHÔNG ghim uid nên ở đây chỉ ép runAsNonRoot (image đã
+        # USER api), không đặt runAsUser để tránh ghim sai uid.
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api-node
+          image: container-platform/api-node:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: api-node
+            - secretRef:
+                name: api-node
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Node app chỉ ghi log ra stdout, không ghi file nào nên
+            # không cần emptyDir.
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-node
+  namespace: container-platform
+  labels:
+    app: api-node
+    app.kubernetes.io/part-of: container-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: api-node
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

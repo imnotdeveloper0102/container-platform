@@ -1,0 +1,65 @@
+# HPA cho 2 service ăn CPU khi có tải: collector-go (nhận log, đẩy Redis)
+# và analyzer-python (đọc queue, phát hiện, ghi DB).
+# Cần metrics-server trong cluster thì HPA mới có số liệu CPU/memory
+# (kind/minikube: `kubectl apply -f
+# https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml`
+# rồi chờ metrics-server chạy; không có metrics-server thì HPA báo
+# "unknown" và không scale).
+# Overlay prod nâng maxReplicas (collector 8, analyzer 6); dev hạ xuống.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: collector-go
+  namespace: container-platform
+  labels:
+    app: collector-go
+    app.kubernetes.io/part-of: container-platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: collector-go
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: analyzer-python
+  namespace: container-platform
+  labels:
+    app: analyzer-python
+    app.kubernetes.io/part-of: container-platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: analyzer-python
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

@@ -1,0 +1,9 @@
+# Namespace riêng của container-platform.
+# Overlay dev đổi namespace thành container-platform-dev (xem
+# overlays/dev/kustomization.yaml); overlay prod giữ nguyên tên này.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: container-platform
+  labels:
+    app.kubernetes.io/part-of: container-platform

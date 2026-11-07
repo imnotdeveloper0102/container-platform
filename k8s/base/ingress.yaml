@@ -1,0 +1,86 @@
+# Ingress nginx — 2 Ingress (tách ra vì annotation rewrite-target áp dụng
+# cho TOÀN BỘ path trong một Ingress, không áp dụng riêng từng path).
+#
+# Host `sec-events.local` là placeholder: đổi thành host thật và trỏ DNS
+# (hoặc thêm `127.0.0.1 sec-events.local` vào /etc/hosts khi test local
+# với kind/minikube). Cần ingress-nginx controller đã cài trong cluster.
+#
+# Ingress 1 (không rewrite):
+# - /api  -> api-node:3000. Route của api-node ĐÃ bắt đầu bằng /api
+#   (/api/alerts, /api/stats, /api/auth/login) nên KHÔNG cần rewrite;
+#   path giữ nguyên khi tới api-node.
+# - /     -> dashboard-ts:80. Dashboard gọi tương đối /api và /ws nên
+#   request /api, /ws từ trình duyệt cũng rơi vào rule /api (tới api-node
+#   trực tiếp) hoặc / (tới nginx của dashboard, proxy tiếp sang api-node)
+#   — cả hai đường đều tới api-node:3000. WebSocket /ws qua ingress-nginx
+#   mặc định đã hỗ trợ Upgrade (không cần annotation thêm).
+#
+# Ingress 2 (có rewrite, riêng cho admin):
+# - /admin(/|$)(.*) -> admin-php:8080 với rewrite-target /$2, tức
+#   /admin/dashboard -> /dashboard, /admin -> /.
+#   Cần rewrite vì admin-php (src/AdminApp.php) định nghĩa route dưới
+#   ROOT: /login, /logout, /dashboard, /users..., /rules, /settings...
+#   Không strip /admin thì mọi request tới admin đều 404.
+#
+# GIỚI HẠN ĐÃ BIẾT — không giả vờ là chạy ngon: rewrite chỉ sửa path của
+# request ĐI VÀO. Admin-php trả redirect và link bằng đường dẫn TUYỆT ĐỐI
+# dưới root: login thành công redirect `Location: /dashboard`, chưa đăng
+# nhập redirect `Location: /login`, link trong template cũng dạng
+# /dashboard, /users... Những URL đó KHÔNG có prefix /admin nên khi chạy
+# qua Ingress này, trình duyệt sẽ request /dashboard, /login — rơi vào
+# rule `/` của Ingress 1 (dashboard SPA) chứ không về admin nữa, luồng
+# đăng nhập bị gãy. Vì vậy /admin + rewrite chỉ đủ để mở được trang
+# (ví dụ GET /admin/login hiển thị form), KHÔNG đủ cho luồng đăng nhập
+# đầy đủ. Cách dùng thật: cho admin MỘT HOST RIÊNG, ví dụ
+# admin.sec-events.local, rule `/` -> admin-php:8080, không rewrite —
+# khi đó mọi redirect/link tuyệt đối đều đúng. Xem k8s/README.md.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: container-platform
+  namespace: container-platform
+  labels:
+    app.kubernetes.io/part-of: container-platform
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: sec-events.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-node
+                port:
+                  number: 3000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dashboard-ts
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: container-platform-admin
+  namespace: container-platform
+  labels:
+    app.kubernetes.io/part-of: container-platform
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: sec-events.local
+      http:
+        paths:
+          - path: /admin(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: admin-php
+                port:
+                  number: 8080

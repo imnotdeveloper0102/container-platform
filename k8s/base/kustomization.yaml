@@ -1,0 +1,19 @@
+# Kustomize base: liệt kê đủ resource của container-platform.
+# Deploy: kubectl apply -k k8s/overlays/dev (mặc định) hoặc
+#         kubectl apply -k k8s/overlays/prod
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - collector.yaml
+  - analyzer.yaml
+  - api.yaml
+  - dashboard.yaml
+  - admin.yaml
+  - postgres.yaml
+  - redis.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - networkpolicy.yaml
+  - pdb.yaml

@@ -1,0 +1,75 @@
+# Overlay dev — ít replica/resource hơn prod, PVC nhỏ hơn, HPA thấp hơn.
+# Namespace riêng container-platform-dev để dev và prod có thể ở chung
+# một cluster mà không đụng nhau (prod giữ namespace gốc
+# container-platform). Deploy: kubectl apply -k k8s/overlays/dev
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: container-platform-dev
+commonLabels:
+  environment: dev
+resources:
+  - ../../base
+patches:
+  # Giảm resource cho dev (base đã vừa, đây chỉ hạ thêm dashboard/admin).
+  - target:
+      kind: Deployment
+      name: dashboard-ts
+    patch: |-
+      spec:
+        template:
+          spec:
+            containers:
+              - name: dashboard-ts
+                resources:
+                  requests:
+                    cpu: 25m
+                    memory: 32Mi
+                  limits:
+                    cpu: 100m
+                    memory: 64Mi
+  - target:
+      kind: Deployment
+      name: admin-php
+    patch: |-
+      spec:
+        template:
+          spec:
+            containers:
+              - name: admin-php
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 250m
+                    memory: 128Mi
+  # PVC nhỏ cho dev.
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 1Gi
+  - target:
+      kind: StatefulSet
+      name: redis
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 512Mi
+  # HPA thấp cho dev.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: collector-go
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 3
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: analyzer-python
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2

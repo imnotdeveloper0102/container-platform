@@ -1,0 +1,117 @@
+# dashboard-ts — ConfigMap, Deployment, Service.
+# Khớp compose + services/dashboard-ts/nginx.conf: nginx :80, proxy /api
+# và /ws tới api-node:3000, SPA fallback về index.html.
+#
+# KHÔNG có Secret cho dashboard: dashboard không có biến môi trường nhạy
+# cảm nào (VITE_API_URL / VITE_WS_URL là build-arg lúc build image, để
+# trống nghĩa là gọi tương đối /api và /ws; token JWT nằm ở trình duyệt,
+# không nằm trong pod). Tạo Secret rỗng chỉ để đủ checklist là bịa nên
+# không tạo — xem k8s/README.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-ts
+  namespace: container-platform
+  labels:
+    app: dashboard-ts
+    app.kubernetes.io/part-of: container-platform
+data:
+  # Chỉ ghi chú, KHÔNG mount vào pod: cấu hình runtime của dashboard nằm
+  # trong nginx.conf đã build sẵn vào image (proxy /api + /ws tới
+  # api-node:3000). VITE_API_URL / VITE_WS_URL là build-arg, không phải
+  # env runtime; để trống lúc build thì app gọi tương đối /api, /ws.
+  NOTE: "Runtime config lives in the image nginx.conf; VITE_API_URL and VITE_WS_URL are build-time args only (empty = relative /api and /ws)."
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard-ts
+  namespace: container-platform
+  labels:
+    app: dashboard-ts
+    app.kubernetes.io/part-of: container-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard-ts
+  template:
+    metadata:
+      labels:
+        app: dashboard-ts
+        app.kubernetes.io/part-of: container-platform
+    spec:
+      serviceAccountName: dashboard-ts
+      automountServiceAccountToken: false
+      securityContext:
+        # nginx:alpine có sẵn user nginx uid 101.
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard-ts
+          image: container-platform/dashboard-ts:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # nginx cần ghi cache + pid + file tạm nên readOnlyRootFilesystem
+            # chỉ bật được khi có emptyDir cho đúng 2 thư mục này (xem
+            # Dockerfile: đã chown /var/cache/nginx và /var/run cho nginx).
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 101
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+          # nginx không có endpoint /healthz riêng; probe GET / trên
+          # cổng 80 (trả index.html, 200 khi nginx sống).
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-ts
+  namespace: container-platform
+  labels:
+    app: dashboard-ts
+    app.kubernetes.io/part-of: container-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: dashboard-ts
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

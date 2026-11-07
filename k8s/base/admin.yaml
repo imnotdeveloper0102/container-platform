@@ -1,0 +1,152 @@
+# admin-php — ConfigMap, Secret, Deployment, Service.
+# Khớp compose + services/admin-php/README.md + src/AdminApp.php:
+# 1 container nginx + php-fpm, nginx listen 8080 trong container,
+# /healthz + /readyz không cần login; route quản trị dưới root:
+# /login, /logout, /dashboard, /users..., /rules, /settings...
+# (xem mục Ingress về giới hạn khi đặt admin dưới prefix /admin).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: admin-php
+  namespace: container-platform
+  labels:
+    app: admin-php
+    app.kubernetes.io/part-of: container-platform
+data:
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "secuser"
+  POSTGRES_DB: "sec_events"
+  ADMIN_SESSION_SECURE: "0"
+  BRUTE_FORCE_THRESHOLD: "5"
+  BRUTE_FORCE_WINDOW_SECONDS: "300"
+  PORT_SCAN_THRESHOLD: "5"
+  PORT_SCAN_WINDOW_SECONDS: "60"
+  ALERT_COOLDOWN_SECONDS: "3600"
+  APP_ENV: "production"
+  LOG_LEVEL: "info"
+---
+# Secret CHỈ chứa placeholder. Thay bằng secret thật TRƯỚC khi dùng thật
+# (kubectl create secret / sealed-secrets / external-secrets):
+# - POSTGRES_PASSWORD phải khớp Secret của postgres.
+# - ADMIN_USER / ADMIN_PASSWORD chỉ dùng để seed tài khoản đầu tiên khi
+#   bảng app_users còn trống; không đặt thì chưa ai đăng nhập được.
+# Tuyệt đối không commit secret thật.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: admin-php
+  namespace: container-platform
+  labels:
+    app: admin-php
+    app.kubernetes.io/part-of: container-platform
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: "change-me"
+  ADMIN_USER: "admin"
+  ADMIN_PASSWORD: "change-me"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-php
+  namespace: container-platform
+  labels:
+    app: admin-php
+    app.kubernetes.io/part-of: container-platform
+spec:
+  # Giữ 1 replica kể cả ở prod: session đăng nhập lưu file ở
+  # /tmp/php-sessions trong pod nên 2 replica sẽ làm session lúc có
+  # lúc mất (request sau rơi sang pod khác thì mất session). Muốn
+  # scale admin thì phải chuyển session sang Redis/DB trước.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-php
+  template:
+    metadata:
+      labels:
+        app: admin-php
+        app.kubernetes.io/part-of: container-platform
+    spec:
+      serviceAccountName: admin-php
+      automountServiceAccountToken: false
+      securityContext:
+        # Dockerfile ghim rõ: groupadd -g 10001, useradd -u 10001 admin.
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: admin-php
+          image: container-platform/admin-php:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: admin-php
+            - secretRef:
+                name: admin-php
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # nginx + php-fpm đều cần ghi vào /tmp: session PHP ở
+            # /tmp/php-sessions, nginx pid /tmp/nginx.pid, các temp
+            # path /tmp/nginx-body, /tmp/nginx-proxy, /tmp/nginx-fastcgi,
+            # /tmp/nginx-uwsgi, /tmp/nginx-scgi (xem nginx.conf) nên
+            # mount emptyDir ở /tmp; còn lại (code /app) chỉ đọc.
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-php
+  namespace: container-platform
+  labels:
+    app: admin-php
+    app.kubernetes.io/part-of: container-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: admin-php
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

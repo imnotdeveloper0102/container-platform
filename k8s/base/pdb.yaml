@@ -1,0 +1,47 @@
+# PodDisruptionBudget cho 3 service quan trọng: luôn còn ít nhất 1 pod
+# khi drain / nâng cấp node (voluntary disruption).
+# Lưu ý: ở dev các Deployment này chỉ có 1 replica nên minAvailable: 1
+# nghĩa là drain node sẽ bị chặn cho tới khi có pod mới — đó là chủ ý
+# (không để service quan trọng về 0), muốn drain nhanh thì scale lên 2
+# trước hoặc xóa PDB tạm thời.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-node
+  namespace: container-platform
+  labels:
+    app: api-node
+    app.kubernetes.io/part-of: container-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: api-node
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: analyzer-python
+  namespace: container-platform
+  labels:
+    app: analyzer-python
+    app.kubernetes.io/part-of: container-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: analyzer-python
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: collector-go
+  namespace: container-platform
+  labels:
+    app: collector-go
+    app.kubernetes.io/part-of: container-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: collector-go

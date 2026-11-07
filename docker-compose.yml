@@ -1,0 +1,190 @@
+services:
+  collector-go:
+    build:
+      context: ./services/collector-go
+      dockerfile: Dockerfile
+    image: container-platform/collector-go:0.1.0
+    container_name: sec-collector-go
+    restart: unless-stopped
+    ports:
+      - "${COLLECTOR_HTTP_PORT:-8080}:8080"
+      - "${COLLECTOR_TCP_PORT:-9000}:9000"
+    environment:
+      HTTP_ADDR: ":8080"
+      TCP_ADDR: ":9000"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      REDIS_DB: "${REDIS_DB:-0}"
+      REDIS_QUEUE: "${REDIS_QUEUE:-events:queue}"
+      WORKER_COUNT: "${WORKER_COUNT:-8}"
+      QUEUE_BUFFER: "${QUEUE_BUFFER:-1000}"
+      PUSH_TIMEOUT_MS: "${PUSH_TIMEOUT_MS:-2000}"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - secnet
+
+  analyzer-python:
+    build:
+      context: ./services/analyzer-python
+      dockerfile: Dockerfile
+    image: container-platform/analyzer-python:0.1.0
+    container_name: sec-analyzer-python
+    restart: unless-stopped
+    ports:
+      - "${ANALYZER_PORT:-8000}:8000"
+    environment:
+      ANALYZER_PORT: "8000"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      REDIS_DB: "${REDIS_DB:-0}"
+      REDIS_QUEUE: "${REDIS_QUEUE:-events:queue}"
+      REDIS_PROCESSING_QUEUE: "${REDIS_PROCESSING_QUEUE:-events:processing}"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "${POSTGRES_USER:-secuser}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-change-me}"
+      POSTGRES_DB: "${POSTGRES_DB:-sec_events}"
+      BRUTE_FORCE_THRESHOLD: "${BRUTE_FORCE_THRESHOLD:-5}"
+      BRUTE_FORCE_WINDOW_SECONDS: "${BRUTE_FORCE_WINDOW_SECONDS:-300}"
+      PORT_SCAN_THRESHOLD: "${PORT_SCAN_THRESHOLD:-5}"
+      PORT_SCAN_WINDOW_SECONDS: "${PORT_SCAN_WINDOW_SECONDS:-60}"
+      ALERT_COOLDOWN_SECONDS: "${ALERT_COOLDOWN_SECONDS:-3600}"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - secnet
+
+  api-node:
+    build:
+      context: ./services/api-node
+      dockerfile: Dockerfile
+    image: container-platform/api-node:0.1.0
+    container_name: sec-api-node
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-3000}:3000"
+    environment:
+      API_PORT: "3000"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      REDIS_DB: "${REDIS_DB:-0}"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "${POSTGRES_USER:-secuser}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-change-me}"
+      POSTGRES_DB: "${POSTGRES_DB:-sec_events}"
+      API_ADMIN_USER: "${API_ADMIN_USER:-}"
+      API_ADMIN_PASSWORD: "${API_ADMIN_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
+      JWT_EXPIRES_IN: "${JWT_EXPIRES_IN:-1h}"
+      WS_POLL_INTERVAL_MS: "${WS_POLL_INTERVAL_MS:-2000}"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - secnet
+
+  dashboard-ts:
+    build:
+      context: ./services/dashboard-ts
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: "${VITE_API_URL:-}"
+        VITE_WS_URL: "${VITE_WS_URL:-}"
+    image: container-platform/dashboard-ts:0.1.0
+    container_name: sec-dashboard-ts
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-8081}:80"
+    # api-node has no healthcheck in this compose file, so only
+    # service_started is possible here (no service_healthy).
+    depends_on:
+      api-node:
+        condition: service_started
+    networks:
+      - secnet
+
+  admin-php:
+    build:
+      context: ./services/admin-php
+      dockerfile: Dockerfile
+    image: container-platform/admin-php:0.1.0
+    container_name: sec-admin-php
+    restart: unless-stopped
+    ports:
+      # nginx trong container listen 8080 (chạy user non-root nên không
+      # bind được cổng 80); ADMIN_PORT là cổng host.
+      - "${ADMIN_PORT:-8082}:8080"
+    environment:
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "${POSTGRES_USER:-secuser}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-change-me}"
+      POSTGRES_DB: "${POSTGRES_DB:-sec_events}"
+      ADMIN_USER: "${ADMIN_USER:-}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      ADMIN_SESSION_SECURE: "${ADMIN_SESSION_SECURE:-0}"
+      BRUTE_FORCE_THRESHOLD: "${BRUTE_FORCE_THRESHOLD:-5}"
+      BRUTE_FORCE_WINDOW_SECONDS: "${BRUTE_FORCE_WINDOW_SECONDS:-300}"
+      PORT_SCAN_THRESHOLD: "${PORT_SCAN_THRESHOLD:-5}"
+      PORT_SCAN_WINDOW_SECONDS: "${PORT_SCAN_WINDOW_SECONDS:-60}"
+      ALERT_COOLDOWN_SECONDS: "${ALERT_COOLDOWN_SECONDS:-3600}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - secnet
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sec-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-secuser}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-change-me}"
+      POSTGRES_DB: "${POSTGRES_DB:-sec_events}"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-secuser} -d ${POSTGRES_DB:-sec_events}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - secnet
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: sec-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - secnet
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  secnet:
+    driver: bridge

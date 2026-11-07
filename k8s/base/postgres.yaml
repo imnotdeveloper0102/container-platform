@@ -1,0 +1,148 @@
+# PostgreSQL — StatefulSet + headless Service + Secret + PVC.
+# Khớp compose: postgres:16-alpine, DB sec_events, user secuser.
+# - Service headless (clusterIP: None) để StatefulSet có DNS ổn định
+#   postgres-0.postgres.<namespace>.svc.cluster.local; các service khác
+#   vẫn gọi tên ngắn `postgres` (Service này resolve ra pod IP).
+# - Probe dùng pg_isready: image postgres:16-alpine CÓ sẵn lệnh này
+#   (compose cũng dùng pg_isready trong healthcheck).
+# - storageClassName KHÔNG đặt: dùng storage class mặc định của cluster.
+#   Nếu cluster không có default class, đặt tên class thật vào
+#   volumeClaimTemplates (base: 2Gi; dev 1Gi, prod 5Gi qua overlay).
+# - uid 70 là uid của user postgres trong postgres:16-alpine; nếu pod
+#   báo permission denied trên /var/lib/postgresql/data, kiểm tra bằng
+#   `kubectl exec statefulset/postgres -- id postgres` rồi sửa
+#   runAsUser/fsGroup theo uid thật. CHƯA kiểm chứng trên cluster thật.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres
+  namespace: container-platform
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: container-platform
+type: Opaque
+stringData:
+  # Placeholder "change-me". Thay bằng mật khẩu thật TRƯỚC khi dùng thật
+  # và phải KHỚP với POSTGRES_PASSWORD trong Secret của analyzer-python,
+  # api-node, admin-php (cùng một mật khẩu DB). Tuyệt đối không commit
+  # secret thật. LƯU Ý: đổi mật khẩu sau khi PVC đã có data thì phải đổi
+  # luôn trong DB, Secret mới chỉ có tác dụng với DB mới tạo.
+  POSTGRES_USER: "secuser"
+  POSTGRES_PASSWORD: "change-me"
+  POSTGRES_DB: "sec_events"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: container-platform
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: container-platform
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: container-platform
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: container-platform
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        app.kubernetes.io/part-of: container-platform
+    spec:
+      serviceAccountName: postgres
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres
+                  key: POSTGRES_DB
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Data chính nằm trên PVC (/var/lib/postgresql/data); socket
+            # + pid nằm ở /var/run/postgresql (emptyDir); file tạm ở
+            # /tmp (emptyDir). Phần còn lại của image chỉ đọc.
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 70
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: pg-run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "secuser", "-d", "sec_events"]
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "secuser", "-d", "sec_events"]
+            periodSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: pg-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

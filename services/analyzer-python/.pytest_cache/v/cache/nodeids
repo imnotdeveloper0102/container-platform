@@ -1,0 +1,18 @@
+[
+  "tests/test_api.py::test_healthz",
+  "tests/test_api.py::test_readyz_without_backends_is_not_ready",
+  "tests/test_api.py::test_stats_shape",
+  "tests/test_detector.py::test_benign_http_no_alert",
+  "tests/test_detector.py::test_brute_force_at_threshold_one_alert",
+  "tests/test_detector.py::test_brute_force_below_threshold_no_alert",
+  "tests/test_detector.py::test_brute_force_cooldown_no_duplicate_alert",
+  "tests/test_detector.py::test_brute_force_window_expires",
+  "tests/test_detector.py::test_event_from_dict_extracts_ip_from_raw",
+  "tests/test_detector.py::test_event_from_dict_matches_collector_json",
+  "tests/test_detector.py::test_extract_ports",
+  "tests/test_detector.py::test_port_scan_distinct_ports",
+  "tests/test_detector.py::test_port_scan_same_port_repeated_no_alert",
+  "tests/test_detector.py::test_sqli_cooldown_no_duplicate",
+  "tests/test_detector.py::test_sqli_or_1_equals_1",
+  "tests/test_detector.py::test_sqli_union_select"
+]

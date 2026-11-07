@@ -1,0 +1,121 @@
+# Overlay prod — nhiều replica hơn dev, resource và PVC lớn hơn, HPA cao hơn.
+# Namespace giữ nguyên container-platform (namespace gốc của base).
+# Deploy: K8S_OVERLAY=prod make k8s-deploy
+#         hoặc kubectl apply -k k8s/overlays/prod
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: container-platform
+commonLabels:
+  environment: prod
+resources:
+  - ../../base
+replicas:
+  - name: collector-go
+    count: 2
+  - name: analyzer-python
+    count: 2
+  - name: api-node
+    count: 2
+  - name: dashboard-ts
+    count: 2
+  # admin-php KHÔNG tăng replica: session đăng nhập lưu file trong pod
+  # (/tmp/php-sessions) nên 2 replica làm session lúc có lúc mất — muốn
+  # scale admin thì phải chuyển session sang Redis/DB trước (xem admin.yaml).
+  - name: admin-php
+    count: 1
+patches:
+  # Tăng resource cho prod.
+  - target:
+      kind: Deployment
+      name: collector-go
+    patch: |-
+      spec:
+        template:
+          spec:
+            containers:
+              - name: collector-go
+                resources:
+                  requests:
+                    cpu: 200m
+                    memory: 256Mi
+                  limits:
+                    cpu: 1000m
+                    memory: 512Mi
+  - target:
+      kind: Deployment
+      name: analyzer-python
+    patch: |-
+      spec:
+        template:
+          spec:
+            containers:
+              - name: analyzer-python
+                resources:
+                  requests:
+                    cpu: 200m
+                    memory: 256Mi
+                  limits:
+                    cpu: 1000m
+                    memory: 1Gi
+  - target:
+      kind: Deployment
+      name: api-node
+    patch: |-
+      spec:
+        template:
+          spec:
+            containers:
+              - name: api-node
+                resources:
+                  requests:
+                    cpu: 200m
+                    memory: 256Mi
+                  limits:
+                    cpu: 1000m
+                    memory: 512Mi
+  - target:
+      kind: Deployment
+      name: dashboard-ts
+    patch: |-
+      spec:
+        template:
+          spec:
+            containers:
+              - name: dashboard-ts
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 128Mi
+                  limits:
+                    cpu: 400m
+                    memory: 256Mi
+  # PVC lớn cho prod.
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 5Gi
+  - target:
+      kind: StatefulSet
+      name: redis
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 2Gi
+  # HPA cao cho prod.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: collector-go
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 8
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: analyzer-python
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 6

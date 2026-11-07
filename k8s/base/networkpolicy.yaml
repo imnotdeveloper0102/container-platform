@@ -1,0 +1,293 @@
+# NetworkPolicy — mặc định chặn hết, chỉ mở đúng luồng cần thiết.
+#
+# LƯU Ý:
+# - NetworkPolicy chỉ có tác dụng khi CNI của cluster enforce nó
+#   (Calico, Cilium...). CNI mặc định của kind (kindnet) KHÔNG enforce
+#   NetworkPolicy nên trên kind các policy này chỉ là khai báo, không
+#   chặn thật — xem k8s/README.md.
+# - Probe liveness/readiness của kubelet KHÔNG bị NetworkPolicy chặn
+#   (kubelet không đi qua network policy) nên các policy dưới đây không
+#   cần mở cổng probe.
+# - Ingress controller được giả định ở namespace ingress-nginx (label
+#   chuẩn kubernetes.io/metadata.name=ingress-nginx). Nếu controller ở
+#   namespace khác, sửa namespaceSelector trong 3 policy ingress bên dưới.
+#
+# Luồng cho phép (ngoài DNS 53 UDP/TCP cho mọi pod):
+# - ingress-nginx -> dashboard-ts:80, api-node:3000, admin-php:8080
+# - dashboard-ts  -> api-node:3000
+# - api-node      -> postgres:5432, redis:6379
+# - analyzer-py   -> postgres:5432, redis:6379
+# - collector-go  -> redis:6379
+# - admin-php     -> postgres:5432
+# - postgres/redis chỉ nhận từ đúng service trên; collector/analyzer
+#   không nhận ingress từ pod nào (chỉ kubelet probe).
+---
+# 1. Default deny tất cả ingress + egress trong namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: container-platform
+  labels:
+    app.kubernetes.io/part-of: container-platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 2. Cho mọi pod resolve DNS (port 53 UDP/TCP ra ngoài).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: container-platform
+  labels:
+    app.kubernetes.io/part-of: container-platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# 3. collector-go: chỉ egress tới redis:6379 (+ DNS ở policy trên).
+# Không mở ingress: không pod nào trong cluster gọi collector.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: collector-go
+  namespace: container-platform
+  labels:
+    app: collector-go
+    app.kubernetes.io/part-of: container-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: collector-go
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+          protocol: TCP
+---
+# 4. analyzer-python: egress tới redis:6379 và postgres:5432.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: analyzer-python
+  namespace: container-platform
+  labels:
+    app: analyzer-python
+    app.kubernetes.io/part-of: container-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: analyzer-python
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+---
+# 5. api-node: ingress từ dashboard-ts và từ ingress-nginx (đường /api);
+# egress tới postgres:5432 và redis:6379.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-node
+  namespace: container-platform
+  labels:
+    app: api-node
+    app.kubernetes.io/part-of: container-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: api-node
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: dashboard-ts
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 3000
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+          protocol: TCP
+---
+# 6. dashboard-ts: ingress từ ingress-nginx (đường /); egress tới api:3000.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dashboard-ts
+  namespace: container-platform
+  labels:
+    app: dashboard-ts
+    app.kubernetes.io/part-of: container-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: dashboard-ts
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 80
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api-node
+      ports:
+        - port: 3000
+          protocol: TCP
+---
+# 7. admin-php: ingress từ ingress-nginx (đường /admin); egress tới postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: admin-php
+  namespace: container-platform
+  labels:
+    app: admin-php
+    app.kubernetes.io/part-of: container-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: admin-php
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+---
+# 8. postgres: chỉ nhận :5432 từ api-node, analyzer-python, admin-php.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: container-platform
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: container-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-node
+        - podSelector:
+            matchLabels:
+              app: analyzer-python
+        - podSelector:
+            matchLabels:
+              app: admin-php
+      ports:
+        - port: 5432
+          protocol: TCP
+  egress: []
+---
+# 9. redis: chỉ nhận :6379 từ collector-go, analyzer-python, api-node.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis
+  namespace: container-platform
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: container-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: collector-go
+        - podSelector:
+            matchLabels:
+              app: analyzer-python
+        - podSelector:
+            matchLabels:
+              app: api-node
+      ports:
+        - port: 6379
+          protocol: TCP
+  egress: []

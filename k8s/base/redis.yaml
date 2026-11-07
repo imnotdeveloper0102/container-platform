@@ -1,0 +1,106 @@
+# Redis — StatefulSet + headless Service + PVC.
+# Khớp compose: redis:7.4-alpine, appendonly yes, DB mặc định không mật
+# khẩu (REDIS_PASSWORD rỗng ở các service). Data ở /data trên PVC.
+# - Probe dùng redis-cli ping: image redis:7.4-alpine CÓ sẵn lệnh này
+#   (compose cũng dùng redis-cli ping trong healthcheck).
+# - storageClassName KHÔNG đặt: dùng storage class mặc định của cluster
+#   (base: 1Gi; dev 512Mi, prod 2Gi qua overlay).
+# - uid 999 là uid thường gặp của user redis trong redis:7.4-alpine; nếu
+#   pod báo permission denied trên /data, kiểm tra bằng
+#   `kubectl exec statefulset/redis -- id redis` rồi sửa runAsUser/fsGroup
+#   theo uid thật. CHƯA kiểm chứng trên cluster thật.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: container-platform
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: container-platform
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: container-platform
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: container-platform
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        app.kubernetes.io/part-of: container-platform
+    spec:
+      serviceAccountName: redis
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          command: ["redis-server", "--appendonly", "yes"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Redis chỉ ghi data ra /data (PVC) và log ra stdout; /tmp
+            # để trống cho file tạm nếu có. Phần còn lại chỉ đọc.
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 999
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: redisdata
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: redisdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
